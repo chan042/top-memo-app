@@ -2,24 +2,33 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/Distribution/build-common.sh"
+
 APP_NAME="TopMemo"
 BUILD_DIR="$ROOT_DIR/build"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
-CONTENTS_DIR="$APP_DIR/Contents"
-MACOS_DIR="$CONTENTS_DIR/MacOS"
-FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
-RESOURCES_DIR="$CONTENTS_DIR/Resources"
-EXECUTABLE="$MACOS_DIR/$APP_NAME"
 APP_ICON_SOURCE="$ROOT_DIR/image/TopMemo_app_ic.png"
 STATUS_BAR_ICON_SOURCE="$ROOT_DIR/image/TopMemoic.png"
 APP_ICON_NAME="TopMemoAppIcon"
-APP_ICON_ICNS="$BUILD_DIR/$APP_ICON_NAME.icns"
-APP_ICON_TEMP_PNG="$BUILD_DIR/$APP_ICON_NAME.png"
 ARCH="$(uname -m)"
 TARGET="$ARCH-apple-macos13.0"
-MODULE_CACHE_DIR="$BUILD_DIR/ModuleCache"
-SDK_MODULE_CACHE_DIR="$BUILD_DIR/SDKModuleCache"
 SOURCE_FILES=("${(@f)$(find "$ROOT_DIR/TopMemo" -name '*.swift' | sort)}")
+TEMP_DIR=""
+
+cleanup() {
+    if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]]; then
+        rm -rf "$TEMP_DIR"
+    fi
+    release_build_lock
+}
+
+handle_signal() {
+    cleanup
+    exit 1
+}
+
+trap cleanup EXIT
+trap handle_signal INT TERM
 
 if [[ ${#SOURCE_FILES[@]} -eq 0 ]]; then
     echo "No Swift source files found." >&2
@@ -41,7 +50,24 @@ generate_icns() {
     xattr -c "$output_icns" 2>/dev/null || true
 }
 
-rm -rf "$APP_DIR"
+acquire_build_lock "$BUILD_DIR"
+TEMP_DIR="$(mktemp -d "$BUILD_DIR/.build-app.XXXXXX")"
+
+rm -rf "$BUILD_DIR/ModuleCache" "$BUILD_DIR/SDKModuleCache"
+rm -f "$BUILD_DIR/$APP_ICON_NAME.icns" "$BUILD_DIR/$APP_ICON_NAME.png"
+rm -rf "$BUILD_DIR/$APP_ICON_NAME.iconset"
+
+STAGING_APP_DIR="$TEMP_DIR/$APP_NAME.app"
+CONTENTS_DIR="$STAGING_APP_DIR/Contents"
+MACOS_DIR="$CONTENTS_DIR/MacOS"
+FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
+EXECUTABLE="$MACOS_DIR/$APP_NAME"
+APP_ICON_ICNS="$TEMP_DIR/$APP_ICON_NAME.icns"
+APP_ICON_TEMP_PNG="$TEMP_DIR/$APP_ICON_NAME.png"
+MODULE_CACHE_DIR="$TEMP_DIR/ModuleCache"
+SDK_MODULE_CACHE_DIR="$TEMP_DIR/SDKModuleCache"
+
 mkdir -p "$MACOS_DIR" "$FRAMEWORKS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR" "$SDK_MODULE_CACHE_DIR"
 cp "$ROOT_DIR/Distribution/Info.plist" "$CONTENTS_DIR/Info.plist"
 if [[ -f "$APP_ICON_SOURCE" ]]; then
@@ -72,6 +98,9 @@ xcrun swift-stdlib-tool \
     --scan-executable "$EXECUTABLE" \
     --destination "$FRAMEWORKS_DIR"
 
-codesign --force --deep --sign - "$APP_DIR" >/dev/null
+codesign --force --deep --sign - "$STAGING_APP_DIR" >/dev/null
+
+rm -rf "$APP_DIR"
+mv "$STAGING_APP_DIR" "$APP_DIR"
 
 echo "$APP_DIR"
