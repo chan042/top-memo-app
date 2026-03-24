@@ -5,20 +5,27 @@ import SwiftUI
 final class PopoverCoordinator: NSObject, NSPopoverDelegate {
     private let statusBarController: StatusBarController
     private let viewModel: NotesViewModel
+    private let shortcutController: GlobalShortcutController
     private let popover = NSPopover()
     private var eventMonitor: Any?
     private lazy var hostingController = NSHostingController(
         rootView: NotesRootView(
             viewModel: viewModel,
+            shortcutController: shortcutController,
             closePopover: { [weak self] in
                 self?.closePopover()
             }
         )
     )
 
-    init(statusBarController: StatusBarController, viewModel: NotesViewModel) {
+    init(
+        statusBarController: StatusBarController,
+        viewModel: NotesViewModel,
+        shortcutController: GlobalShortcutController
+    ) {
         self.statusBarController = statusBarController
         self.viewModel = viewModel
+        self.shortcutController = shortcutController
         super.init()
         configurePopover()
         configureStatusButton()
@@ -44,6 +51,18 @@ final class PopoverCoordinator: NSObject, NSPopoverDelegate {
         startEventMonitor()
     }
 
+    func showNewMemoFromShortcut() {
+        viewModel.handleShortcutTriggered()
+
+        if popover.isShown {
+            NSApp.activate(ignoringOtherApps: true)
+            hostingController.view.window?.makeKey()
+            return
+        }
+
+        presentPopover()
+    }
+
     func popoverDidClose(_ notification: Notification) {
         stopEventMonitor()
     }
@@ -67,11 +86,15 @@ final class PopoverCoordinator: NSObject, NSPopoverDelegate {
     }
 
     private func showPopover() {
+        viewModel.handlePopoverOpened()
+        presentPopover()
+    }
+
+    private func presentPopover() {
         guard let button = statusBarController.button else {
             return
         }
 
-        viewModel.handlePopoverOpened()
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         startEventMonitor()

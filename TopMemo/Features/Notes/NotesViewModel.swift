@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -10,7 +11,9 @@ enum NotesAlert: Identifiable, Equatable {
     case discardChanges
     case deleteMemo
     case deleteAllMemos
-    case error(message: String)
+    case confirmRestore(fileName: String)
+    case notice(title: String, message: String)
+    case error(title: String, message: String)
 
     var id: String {
         switch self {
@@ -20,8 +23,12 @@ enum NotesAlert: Identifiable, Equatable {
             return "deleteMemo"
         case .deleteAllMemos:
             return "deleteAllMemos"
-        case .error(let message):
-            return "error-\(message)"
+        case .confirmRestore(let fileName):
+            return "confirmRestore-\(fileName)"
+        case .notice(let title, let message):
+            return "notice-\(title)-\(message)"
+        case .error(let title, let message):
+            return "error-\(title)-\(message)"
         }
     }
 }
@@ -37,6 +44,7 @@ final class NotesViewModel: ObservableObject {
 
     private let store: NotesStore
     private var originalDraft: MemoDraft = .empty
+    private var pendingRestoreURL: URL?
 
     init(store: NotesStore) {
         self.store = store
@@ -64,7 +72,19 @@ final class NotesViewModel: ObservableObject {
         openDefaultComposer()
     }
 
+    func handleShortcutTriggered() {
+        activeAlert = nil
+
+        if isDirty {
+            requestFocus()
+            return
+        }
+
+        startNewMemo()
+    }
+
     func startNewMemo() {
+        colorSelectionRequest = nil
         draft = .empty
         originalDraft = draft
         route = .editor(memoID: nil)
@@ -72,6 +92,7 @@ final class NotesViewModel: ObservableObject {
     }
 
     func edit(_ memo: MemoItem) {
+        colorSelectionRequest = nil
         draft = .from(memo)
         originalDraft = draft
         route = .editor(memoID: memo.id)
@@ -108,6 +129,65 @@ final class NotesViewModel: ObservableObject {
         activeAlert = .deleteAllMemos
     }
 
+    func exportAllNotes() {
+        do {
+            let exportURL = try store.export(notes)
+            NSWorkspace.shared.activateFileViewerSelecting([exportURL])
+            activeAlert = .notice(
+                title: "내보내기 완료",
+                message: "\(exportURL.lastPathComponent)을 다운로드 폴더에 저장했고 Finder에서 바로 열었습니다."
+            )
+        } catch {
+            activeAlert = .error(
+                title: "내보내기 오류",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    func handleRestoreFileSelection(_ result: Result<URL, Error>) {
+        do {
+            let restoreURL = try result.get()
+            pendingRestoreURL = restoreURL
+            activeAlert = .confirmRestore(fileName: restoreURL.lastPathComponent)
+        } catch {
+            guard !Self.isUserCancelled(error) else {
+                return
+            }
+
+            activeAlert = .error(
+                title: "파일 선택 오류",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    func restorePendingMemos() {
+        activeAlert = nil
+
+        guard let restoreURL = pendingRestoreURL else {
+            return
+        }
+
+        pendingRestoreURL = nil
+
+        do {
+            let restoredNotes = Self.sorted(try store.restore(from: restoreURL))
+            try store.save(restoredNotes)
+            applyRestoredNotes(restoredNotes)
+
+            activeAlert = .notice(
+                title: "복원 완료",
+                message: "\(restoredNotes.count)개의 메모를 복원했습니다."
+            )
+        } catch {
+            activeAlert = .error(
+                title: "복원 오류",
+                message: error.localizedDescription
+            )
+        }
+    }
+
     func deleteCurrent() {
         activeAlert = nil
 
@@ -125,13 +205,18 @@ final class NotesViewModel: ObservableObject {
 
     func deleteAllMemos() {
         activeAlert = nil
-        notes = []
+        let previousNotes = notes
 
         do {
             try store.save([])
+            notes = []
             prepareEmptyComposer()
         } catch {
-            activeAlert = .error(message: error.localizedDescription)
+            notes = previousNotes
+            activeAlert = .error(
+                title: "저장 오류",
+                message: error.localizedDescription
+            )
         }
     }
 
@@ -176,6 +261,7 @@ final class NotesViewModel: ObservableObject {
     }
 
     func clearAlert() {
+        pendingRestoreURL = nil
         activeAlert = nil
     }
 
@@ -186,7 +272,10 @@ final class NotesViewModel: ObservableObject {
         } catch {
             notes = []
             route = .emptyComposer
-            activeAlert = .error(message: error.localizedDescription)
+            activeAlert = .error(
+                title: "불러오기 오류",
+                message: error.localizedDescription
+            )
         }
     }
 
@@ -199,6 +288,7 @@ final class NotesViewModel: ObservableObject {
     }
 
     private func prepareEmptyComposer() {
+        colorSelectionRequest = nil
         draft = .empty
         originalDraft = draft
         route = .emptyComposer
@@ -217,6 +307,7 @@ final class NotesViewModel: ObservableObject {
     }
 
     private func restoreDraftFromSource() {
+        colorSelectionRequest = nil
         if let memoID = draft.memoID, let memo = notes.first(where: { $0.id == memoID }) {
             draft = .from(memo)
             originalDraft = draft
@@ -236,7 +327,10 @@ final class NotesViewModel: ObservableObject {
         do {
             try store.save(notes)
         } catch {
-            activeAlert = .error(message: error.localizedDescription)
+            activeAlert = .error(
+                title: "저장 오류",
+                message: error.localizedDescription
+            )
         }
     }
 
@@ -248,5 +342,24 @@ final class NotesViewModel: ObservableObject {
 
             return $0.updatedAt > $1.updatedAt
         }
+    }
+
+    private func applyRestoredNotes(_ restoredNotes: [MemoItem]) {
+        notes = restoredNotes
+        colorSelectionRequest = nil
+        draft = .empty
+        originalDraft = draft
+
+        if restoredNotes.isEmpty {
+            route = .emptyComposer
+            requestFocus()
+        } else {
+            route = .memoList
+        }
+    }
+
+    private static func isUserCancelled(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError
     }
 }

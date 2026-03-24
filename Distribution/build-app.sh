@@ -89,6 +89,7 @@ xcrun swiftc \
     -framework SwiftUI \
     -framework AppKit \
     -framework Combine \
+    -framework Carbon \
     "${SOURCE_FILES[@]}" \
     -o "$EXECUTABLE"
 

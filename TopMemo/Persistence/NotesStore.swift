@@ -22,12 +22,7 @@ struct NotesStore {
             return []
         }
 
-        let data = try Data(contentsOf: fileURL)
-        guard !data.isEmpty else {
-            return []
-        }
-
-        return try JSONDecoder.memoDecoder.decode([MemoItem].self, from: data)
+        return try decodeNotes(from: fileURL)
     }
 
     func save(_ notes: [MemoItem]) throws {
@@ -46,6 +41,33 @@ struct NotesStore {
         try data.write(to: fileURL, options: .atomic)
     }
 
+    func export(_ notes: [MemoItem]) throws -> URL {
+        let downloadsURL = try fileManager.url(
+            for: .downloadsDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let exportURL = downloadsURL.appendingPathComponent(Self.exportFileName(for: Date()))
+        let payload = NotesBackupPayload(notes: notes)
+        let data = try JSONEncoder.memoEncoder.encode(payload)
+
+        try data.write(to: exportURL, options: .atomic)
+        return exportURL
+    }
+
+    func restore(from fileURL: URL) throws -> [MemoItem] {
+        let didAccessSecurityScopedResource = fileURL.startAccessingSecurityScopedResource()
+
+        defer {
+            if didAccessSecurityScopedResource {
+                fileURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        return try decodeNotes(from: fileURL)
+    }
+
     func storageFileURL() throws -> URL {
         let applicationSupportURL = try fileManager.url(
             for: .applicationSupportDirectory,
@@ -57,6 +79,73 @@ struct NotesStore {
         return applicationSupportURL
             .appendingPathComponent(appDirectoryName, isDirectory: true)
             .appendingPathComponent(fileName, isDirectory: false)
+    }
+
+    private func decodeNotes(from fileURL: URL) throws -> [MemoItem] {
+        let data = try Data(contentsOf: fileURL)
+
+        guard !data.isEmpty else {
+            return []
+        }
+
+        if let payload = try? JSONDecoder.memoDecoder.decode(NotesBackupPayload.self, from: data) {
+            guard payload.schemaVersion == NotesBackupPayload.currentSchemaVersion else {
+                throw NotesStoreError.unsupportedBackupVersion(payload.schemaVersion)
+            }
+
+            return payload.notes
+        }
+
+        if let notes = try? JSONDecoder.memoDecoder.decode([MemoItem].self, from: data) {
+            return notes
+        }
+
+        throw NotesStoreError.invalidBackupFile
+    }
+}
+
+private extension NotesStore {
+    static func exportFileName(for date: Date) -> String {
+        "topmemo-notes-\(exportDateFormatter.string(from: date)).json"
+    }
+
+    static let exportDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
+}
+
+private struct NotesBackupPayload: Codable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let exportedAt: Date
+    let notes: [MemoItem]
+
+    init(
+        schemaVersion: Int = currentSchemaVersion,
+        exportedAt: Date = Date(),
+        notes: [MemoItem]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.exportedAt = exportedAt
+        self.notes = notes
+    }
+}
+
+private enum NotesStoreError: LocalizedError {
+    case invalidBackupFile
+    case unsupportedBackupVersion(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidBackupFile:
+            return "TopMemo에서 내보낸 JSON 백업 파일이 아니어서 복원할 수 없습니다."
+        case .unsupportedBackupVersion(let version):
+            return "이 백업 파일 버전(\(version))은 현재 앱에서 지원하지 않습니다."
+        }
     }
 }
 

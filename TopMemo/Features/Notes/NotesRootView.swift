@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NotesRootView: View {
     @ObservedObject var viewModel: NotesViewModel
+    @ObservedObject var shortcutController: GlobalShortcutController
     let closePopover: () -> Void
 
     var body: some View {
@@ -14,7 +15,10 @@ struct NotesRootView: View {
                 case .memoList:
                     NotesListView(viewModel: viewModel)
                 case .settings:
-                    NotesSettingsView(viewModel: viewModel)
+                    NotesSettingsView(
+                        viewModel: viewModel,
+                        shortcutController: shortcutController
+                    )
                 case .emptyComposer, .editor:
                     MemoEditorView(viewModel: viewModel, closePopover: closePopover)
                 }
@@ -64,9 +68,28 @@ struct NotesRootView: View {
                     viewModel.clearAlert()
                 }
             )
-        case .error(let message):
+        case .confirmRestore(let fileName):
             return Alert(
-                title: Text("저장 오류"),
+                title: Text("메모를 복원할까요?"),
+                message: Text("현재 메모가 \(fileName) 내용으로 교체됩니다."),
+                primaryButton: .default(Text("복원")) {
+                    viewModel.restorePendingMemos()
+                },
+                secondaryButton: .cancel {
+                    viewModel.clearAlert()
+                }
+            )
+        case .notice(let title, let message):
+            return Alert(
+                title: Text(title),
+                message: Text(message),
+                dismissButton: .default(Text("확인")) {
+                    viewModel.clearAlert()
+                }
+            )
+        case .error(let title, let message):
+            return Alert(
+                title: Text(title),
                 message: Text(message),
                 dismissButton: .default(Text("확인")) {
                     viewModel.clearAlert()
